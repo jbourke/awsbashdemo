@@ -1,0 +1,232 @@
+#!/bin/bash
+# AWS IP Echo Demo
+# Author: Jake Bourke
+
+#set -x
+
+# Users almost never have multiple AWS profiles.  We assume default, but save it as a variable so it can be modified.
+awsProfile='default'
+#Default names for things like groups and keys
+userIP=`curl -s https://api.ipify.org`
+awsSecGrpName='GVDemoWebAccess'
+awsKeyPairName='GVDemo'
+# ID from https://cloud-images.ubuntu.com/locator/ec2/
+awsBaseAMI='ami-ddf13fb0'
+
+# $1 - command - new, update, teardown
+# $2 - project - /path/to/executable
+
+###############################################
+## Prep environment, return errors if needed ##
+###############################################
+mkdir -p /tmp/gvdemo
+
+# Does an AWS client cred file exist?
+if [ ! -f ~/.aws/config ]; then
+  echo "~/.aws/config does not exist.  Please install and configure AWS command line tools.  http://aws.amazon.com/cli/"
+  exit 1
+fi
+
+# Are the AWS CLI Tools installed?
+if [ "$(which aws)" == '' ]; then
+  echo "AWS CLI Tools missing.  Please install and configure AWS command line tools.  http://aws.amazon.com/cli/"
+  exit 1
+fi
+
+#################################################
+## Process request, return error, confirm task ##
+#################################################
+case $1 in
+  new)
+    ## Launch a new server, and keys or security groups if needed.  Then upload and run the app.
+
+    # Ensure valid path to the project executable
+    if [ ! -f $2 ]; then
+      echo "$2 does not exist.  Please provide a path to the project executable."
+      exit 1
+    fi
+
+    #####################################################
+    ## This limit of 1 instance is added for the sake of 
+    ## the brevity of the demo.  Looping over instances 
+    ## for updates and deletes adds complexity that was 
+    ## not required in order to provide a complete demo.
+    #####################################################
+    # Is an instance already running?  Return error if it is.
+    tmpInstanceCount=`aws --profile default --output text ec2 describe-instances --filter "Name=tag-key,Values=gvdemo", "Name=instance-state-name,Values=running" --query 'Reservations[*].Instances[0].InstanceId' | wc -l`
+    if [ $tmpInstanceCount -gt 0 ]; then
+      echo "Demo project already running.  Please teardown before making a new instance, or use update to change the project on the instance."
+      exit 1
+    fi
+
+
+    ## If a key has not been created and saved, do that now.
+    if [ ! -f /tmp/gvdemo/gv_rsa ]; then
+      echo "Creating key pair..."
+      tmpKeyReturn=`aws --profile $awsProfile --output text ec2 create-key-pair --key-name $awsKeyPairName --query 'KeyMaterial'`
+      if [ $? -gt 0 ]; then
+        echo "Failed to create demo keypair."
+        return 1
+      fi
+      echo -e "$tmpKeyReturn" > /tmp/gvdemo/gv_rsa
+      chmod 400 /tmp/gvdemo/gv_rsa  
+    fi
+    
+
+    ## Find the security group we made.  If it doesnt exist yet, make it.
+    awsSecurityGroup=`aws --profile $awsProfile --output text ec2 describe-security-groups --group-names $awsSecGrpName --query 'SecurityGroups[*].GroupId'`
+    if [ $? -gt 0 ]; then
+      # Make security group
+      echo "Creating security group..."
+      awsSecurityGroup=`aws --profile $awsProfile --output text ec2 create-security-group --group-name $awsSecGrpName --description "GVDemo Security group, safe to delete post demo." | awk '{print $1}'`
+      # Make ingress rules. These will fail noisily if there is no SG ID, and the next error check will exit.
+      aws --profile $awsProfile --output text ec2 authorize-security-group-ingress --group-id $awsSecurityGroup --protocol tcp --port 8080 --cidr 0.0.0.0/0
+      aws --profile $awsProfile --output text ec2 authorize-security-group-ingress --group-id $awsSecurityGroup --protocol tcp --port 22 --cidr ${userIP}/32
+    fi
+    # Last chance, are we sure we have a security group ID?
+    if [ "$awsSecurityGroup" == '' ]; then
+      echo "Failed to create or describe security group."
+      return 1
+    fi
+
+
+    ## Start new instance
+    echo "Starting new instance..."
+    awsInstanceID=`aws --profile $awsProfile --output text ec2 run-instances --image-id $awsBaseAMI --count 1 --instance-type t2.nano --key-name $awsKeyPairName --security-groups $awsSecGrpName --query 'Instances[0].InstanceId'`
+    if [ $? -gt 0 ]; then
+      echo "Failed to run new ec2 instance.  $tmpInstanceReturn"
+      exit 1
+    fi
+    # Tag the instance for future access
+    aws ec2 create-tags --resources $awsInstanceID --tags Key=gvdemo,Value=true
+    if [ $? -gt 0 ]; then
+      echo "Failed to tag server, won't be able to find it later.  Please terminate $awsInstanceID"
+      exit 1
+    fi
+
+    ## Cool down period...instances take time to start and become responsive.  Time to wait.
+    awsInstanceDNS=''
+    tmpCount=60
+    # Wait for the instance to become running, and grab the access address
+    while [ $tmpCount -gt 0 ]; do
+      # Poll the instance state and wait till it's running, for up to 60 seconds.
+      tmpInstanceState=`aws --profile $awsProfile --output text ec2 describe-instances --instance-id $awsInstanceID --query 'Reservations[0].Instances[0].State.Name'`
+      if [ "$tmpInstanceState" == 'running' ]; then
+        # Once it's running
+        awsInstanceDNS=`aws --profile $awsProfile --output text ec2 describe-instances --instance-id $awsInstanceID --query 'Reservations[0].Instances[0].PublicDnsName'`
+        break
+      else
+        echo "Instance is still $tmpInstanceState..."
+        tmpCount=$((tmpCount-10))
+        sleep 10
+      fi
+    done
+    # Did we leave the wait loop with success or a timeout?
+    if [ $tmpCount -lt 0 ] || [ "$awsInstanceDNS" == '' ]; then
+      echo "Timed out waiting for instance to be running.  May have to clean up $awsInstanceID"
+      exit 1
+    fi
+    echo "Instance $awsInstanceDNS is running!"
+    # Instances take time to come online after hitting the running state.  We need to poll again.
+    sleep 30
+
+    tmpCount=20
+    # Wait for the instance to accept ssh connections, try 20 times
+    while [ $tmpCount -gt 0 ]; do
+      # Try to ssh in, and check the return code for success
+      echo "SSH connection attempts remaining: ${tmpCount}..."
+      ssh -p22 -i /tmp/gvdemo/gv_rsa ubuntu@${awsInstanceDNS} date
+      if [ $? -eq 0 ]; then
+        break
+      else
+        tmpCount=$((tmpCount-1))
+        sleep 10
+      fi
+    done
+
+    #####################################################
+    ## Adding the instance to an ELB or other balancer
+    ## could go here to make this an HA implementation.
+    #####################################################
+
+    echo "Successfully connected to instance!"
+    echo "Uploading and starting project!"
+    # Upload the project and start it
+    rsync -avh -e "ssh -p22 -i /tmp/gvdemo/gv_rsa" $2 ubuntu@${awsInstanceDNS}:/home/ubuntu/gv_demo_app_42
+    ssh -n -p22 -i /tmp/gvdemo/gv_rsa ubuntu@${awsInstanceDNS} "nohup /home/ubuntu/gv_demo_app_42 &>/dev/null &"
+    echo "Done!"
+    
+    echo "Check your IP: http://${awsInstanceDNS}:8080"
+  ;;
+  update)
+    # Ensure valid path to the project executable
+    if [ ! -f $2 ]; then
+      echo "$2 does not exist.  Please provide a path to the project executable."
+      exit 1
+    fi
+
+    # Get the DNS entry for the instance we want to update.
+    awsInstanceDNS=`aws --profile default --output text ec2 describe-instances --filter "Name=tag-key,Values=gvdemo", "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0].PublicDnsName'`
+    if [ "$awsInstanceDNS" == '' ]; then
+      echo "Failed to get instance ID."
+      exit 1
+    fi
+
+    echo "Uploading and restarting project!"
+    #####################################################
+    ## Another concession to time.  Serving only one app
+    ## is easiest, but this renaming of the binary could
+    ## be renamed to allow several running with some
+    ## modest effort.  Better to use containers.
+    #####################################################
+    # Upload the new project, kill the old one, and start it again.
+    rsync -avh -e "ssh -i /tmp/gvdemo/gv_rsa" $2 ubuntu@${awsInstanceDNS}:/home/ubuntu/gv_demo_app_42
+    ssh -i /tmp/gvdemo/gv_rsa ubuntu@${awsInstanceDNS} "pkill gv_demo_app_42"
+    ssh -n -i /tmp/gvdemo/gv_rsa ubuntu@${awsInstanceDNS} "nohup /home/ubuntu/gv_demo_app_42 &>/dev/null &"
+    echo "Done!"
+
+    echo "Check your IP: http://${awsInstanceDNS}:8080"
+  ;;
+  teardown)
+    # Find and delete the instance
+    awsInstanceID=`aws --profile default --output text ec2 describe-instances --filter "Name=tag-key,Values=gvdemo", "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0].InstanceId'`
+
+    if [ "$awsInstanceID" != 'None' ]; then
+      echo "Terminating instance $awsInstanceID"
+      aws --profile $awsProfile --output text ec2 terminate-instances --instance-ids $awsInstanceID
+
+      tmpCount=60
+      while [ $tmpCount -gt 0 ]; do
+        # Poll the instance state to determine if the instance is terminated yet.
+        tmpInstanceState=`aws --profile $awsProfile --output text ec2 describe-instances --instance-id $awsInstanceID --query 'Reservations[0].Instances[0].State.Name'`
+        if [ "$tmpInstanceState" == 'terminated' ]; then
+           break
+        else
+          echo "Instance is still $tmpInstanceState..."
+          tmpCount=$((tmpCount-10))
+          sleep 10
+        fi
+      done
+    fi
+
+    # Delete security group
+    echo "Deleting security group..."
+    aws --profile $awsProfile --output text ec2 delete-security-group --group-name $awsSecGrpName
+    if [ $? -gt 0 ]; then
+      echo "Failed to delete security group - $awsSecGrpName"
+    fi
+
+    # Delete the key pair
+    echo "Deleting key pair group..."
+    aws --profile $awsProfile --output text ec2 delete-key-pair --key-name $awsKeyPairName
+    if [ $? -gt 0 ]; then
+      echo "Failed to delete keypair - $awsKeyPairName"
+    fi
+    rm -rf /tmp/gvdemo/
+  ;;
+  *)
+    echo "Usage: gvawsdemo [new,update,teardown] /path/to/project/executable"
+    echo " Only one instance at a time can be run for the purposes of demo time frames.  If you wish to update a running project, please use 'update' to push a new executable."
+    exit 1
+  ;;
+esac

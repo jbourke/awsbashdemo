@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Your IP!</title>
+  <script type="application/javascript">
+    function getip(json){
+      document.getElementById("clientip").innerHTML = json.ip;
+    }
+  </script>
+</head>
+<body>
+  <div id="clientip">Getting your IP address...</div>
+  <script type="application/javascript" src="https://api.ipify.org?format=jsonp&callback=getip"></script>
+</body>
+</html>
