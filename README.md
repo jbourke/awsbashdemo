@@ -7,7 +7,6 @@ This demo was written in just a few hours in accordance with a time limited task
 * AWS CLI Tools is installed, and the version is 1.3 or higher.
 * AWS user config is setup.  The profile to use can be set within the demo script if it is not 'default'.
 * The used AWS account must have a default VPC or be EC2 Classic.  This does not include network setup.
-* Built on a Linux desktop for a Linux environment.  Has not been tested on OSX yet.
 
 ## Why BASH?
 
@@ -38,6 +37,7 @@ This was something whipped up in a few minutes to demonstrate a more practical w
 ### Troubleshooting - so far
 * SSH - To many auth failures: Clear your ssh keyring, `ssh-add -D`
 * Can't write to /tmp - Script needs to save the key file locally.  Make sure /tmp is writable by your user.
+* AWS Permission Denied - Make sure your AWS config has a valid default profile, or update the profile to use in the gvawsdemo script.
 
 ### Next Steps
 
@@ -45,5 +45,6 @@ This was something whipped up in a few minutes to demonstrate a more practical w
 * Support for multiple project could be added by adding logic around the upload and restart of project.  More commands would need to be added to support adding and removing projects.
 * Include custom VPC support.  A new VPC, subnets, routes, and IGW could be made during the first call to `new`.
 * Support containers or git repos.  These could be sent as arguments, and a script could replace nohup to perform setup and execution.
+* Properly split the repo.  One repo for the project, one for the hardware code (terraform, api via bash), one for the system state (ansible, puppet, bash system setup scripts).
 * Don't use bash.  Literally any other language would be a better idea if this needs to be used in a formal setting.  Seriously, this is not for prod.
 

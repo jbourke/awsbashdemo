@@ -53,7 +53,7 @@ case $1 in
     ## not required in order to provide a complete demo.
     #####################################################
     # Is an instance already running?  Return error if it is.
-    tmpInstanceCount=`aws --profile default --output text ec2 describe-instances --filter "Name=tag-key,Values=gvdemo", "Name=instance-state-name,Values=running" --query 'Reservations[*].Instances[0].InstanceId' | wc -l`
+    tmpInstanceCount=`aws --profile default --output text ec2 describe-instances --filter "Name=tag-key,Values=gvdemo" "Name=instance-state-name,Values=running" --query 'Reservations[*].Instances[0].InstanceId' | wc -l`
     if [ $tmpInstanceCount -gt 0 ]; then
       echo "Demo project already running.  Please teardown before making a new instance, or use update to change the project on the instance."
       exit 1
@@ -98,7 +98,7 @@ case $1 in
       exit 1
     fi
     # Tag the instance for future access
-    aws ec2 create-tags --resources $awsInstanceID --tags Key=gvdemo,Value=true
+    aws --profile $awsProfile --output text ec2 create-tags --resources $awsInstanceID --tags Key=gvdemo,Value=true
     if [ $? -gt 0 ]; then
       echo "Failed to tag server, won't be able to find it later.  Please terminate $awsInstanceID"
       exit 1
@@ -166,7 +166,7 @@ case $1 in
     fi
 
     # Get the DNS entry for the instance we want to update.
-    awsInstanceDNS=`aws --profile default --output text ec2 describe-instances --filter "Name=tag-key,Values=gvdemo", "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0].PublicDnsName'`
+    awsInstanceDNS=`aws --profile default --output text ec2 describe-instances --filter "Name=tag-key,Values=gvdemo" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0].PublicDnsName'`
     if [ "$awsInstanceDNS" == '' ]; then
       echo "Failed to get instance ID."
       exit 1
@@ -189,7 +189,7 @@ case $1 in
   ;;
   teardown)
     # Find and delete the instance
-    awsInstanceID=`aws --profile default --output text ec2 describe-instances --filter "Name=tag-key,Values=gvdemo", "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0].InstanceId'`
+    awsInstanceID=`aws --profile default --output text ec2 describe-instances --filter "Name=tag-key,Values=gvdemo" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0].InstanceId'`
 
     if [ "$awsInstanceID" != 'None' ]; then
       echo "Terminating instance $awsInstanceID"
